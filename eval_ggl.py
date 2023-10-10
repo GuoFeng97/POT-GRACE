@@ -7,6 +7,7 @@ import torch
 from model_ggl import LogReg
 from sklearn.metrics import f1_score
 from tensorlayerx.model import TrainOneStep, WithLoss
+import torch.nn.functional as F
 
 def get_idx_split(dataset, split, preload_split):
     if split[:4] == 'rand':
@@ -39,6 +40,8 @@ def get_idx_split(dataset, split, preload_split):
     else:
         raise RuntimeError(f'Unknown split type {split}')
 
+def nll_loss_func(output, target):
+    return torch.nn.NLLLoss()(output, target)
 
 def log_regression(z,
                    dataset,
@@ -50,28 +53,28 @@ def log_regression(z,
                    preload_split=None):
     # test_device = z.device if test_device is None else test_device
     # z = z.detach().to(test_device)
-    num_hidden=z.numpy().shape[1]
-    y = dataset[0].y.numpy().flatten()
-    y_numpy = dataset[0].y.numpy()
-    max_value = np.max(y_numpy)
-    num_classes = int(max_value) + 1
-
-    # classifier = LogReg(num_hidden, num_classes)
-    # optimizer = Adam(lr=0.01, weight_decay=0.0)
+    
+    num_hidden = tlx.get_tensor_shape(z.detach())[1]
+    y = dataset[0].y
+    y = tlx.reshape(y, [-1])
+    num_classes = tlx.convert_to_numpy(tlx.reduce_max(y) + 1)
 
     split = get_idx_split(dataset, split, preload_split)
     split = {k: v for k, v in split.items()}
 
+    print(num_hidden,num_classes)
     classifier = LogReg(num_hidden, num_classes)
     optimizer = Adam(lr=0.01, weight_decay=0.0)
     train_weights = classifier.trainable_weights
-    # output = classifier(z[split['train']])
-    nll_loss = tlx.losses.softmax_cross_entropy_with_logits
-    net_with_loss = tlx.model.WithLoss(classifier, nll_loss)
-    train_one_step = TrainOneStep(net_with_loss, optimizer, train_weights)
+    output = classifier(z[split['train']])
+    output = nn.LogSoftmax(dim=-1)(output)
+    nll_loss=nll_loss_func
+    # train_one_step = TrainOneStep(nll_loss, optimizer, train_weights)
 
-    # f = nn.LogSoftmax(dim=-1)
-    # nll_loss = torch.nn.NLLLoss()
+    # loss_fn = tlx.losses.softmax_cross_entropy_with_logits
+
+    net_with_loss = tlx.model.WithLoss(classifier, nll_loss)
+    train_one_step = tlx.model.TrainOneStep(net_with_loss, optimizer, train_weights)
 
     best_test_mi = 0
     best_test_ma = 0
@@ -79,26 +82,16 @@ def log_regression(z,
     best_epoch = 0
 
     for epoch in range(num_epochs):
-        # classifier.set_train()
-
-        output = classifier(z[split['train']])
-        loss = train_one_step(nn.LogSoftmax(dim=-1)(output), nn.LogSoftmax(dim=-1)(y[split['train']]))
-
-        # classifier.train()
-        # optimizer.zero_grad()
-
-        # output = classifier(z[split['train']])
-        # loss = nll_loss(f(output), y[split['train']])
-
-        # loss.backward()
-        # optimizer.step()
+        classifier.set_train()
+        
+        loss = train_one_step(output, y[split['train']])
 
         if (epoch + 1) % 20 == 0:
             if 'val' in split:
-                # val split is available
+                    # val split is available
                 test_res = evaluator.eval({
-                    'y_true': y[split['test']].reshape(-1, 1),
-                    'y_pred': tlx.reshape(tlx.argmax(classifier(z[split['test']]),axis=-1),[-1, 1])
+                   'y_true': y[split['test']].reshape(-1, 1),
+                  'y_pred': tlx.reshape(tlx.argmax(classifier(z[split['test']]),axis=-1),[-1, 1])
                 })
                 test_mi, test_ma = test_res['F1Mi'], test_res['F1Ma']
                 val_res = evaluator.eval({
@@ -123,7 +116,7 @@ def log_regression(z,
                     best_epoch = epoch
             if verbose:
                 print(f'logreg epoch {epoch}: best test mi {best_test_mi}, best test ma {best_test_ma}')
-
+                
     return {'F1Mi': best_test_mi, 'F1Ma': best_test_ma}
 
 

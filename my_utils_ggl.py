@@ -2,6 +2,7 @@ import os.path as osp
 #无CitationFull,WikiCS,AttributedGraphDataset,StochasticBlockModelDataset
 from gammagl.datasets import Planetoid, Coauthor, Amazon
 import gammagl.transforms as T
+from gammagl.mpops import unsorted_segment_sum
 import torch
 # from ogb.nodeproppred import PygNodePropPredDataset
 import numpy as np
@@ -229,15 +230,16 @@ def to_dense_adj(
     if batch is None:
         num_nodes = int(tlx.reduce_max(edge_index)) + 1 if tlx.numel(edge_index) > 0 else 0
         # batch = edge_index.new_zeros(num_nodes)
-        batch = tlx.zeros(num_nodes)
+        batch = tlx.zeros((num_nodes,),dtype=tlx.int64)
 
     if batch_size is None:
         batch_size = int(tlx.reduce_max(batch)) + 1 if tlx.numel(batch) > 0 else 1
 
-    one = tlx.ones(batch.shape[0])
-    num_nodes = scatter(one, batch, dim=0, dim_size=batch_size, reduce='sum')
+    one = tlx.ones((batch.shape[0],),dtype=tlx.int64)
+    # num_nodes = scatter(one, batch, dim=0, dim_size=batch_size, reduce='sum')
+    num_nodes = unsorted_segment_sum(one, batch)
     cum_nodes = tlx.cumsum(num_nodes)
-
+    
     idx0 = batch[edge_index[0]]
     idx1 = edge_index[0] - cum_nodes[batch][edge_index[0]]
     idx2 = edge_index[1] - cum_nodes[batch][edge_index[1]]
@@ -261,7 +263,10 @@ def to_dense_adj(
     flattened_size = batch_size * max_num_nodes * max_num_nodes
 
     idx = idx0 * max_num_nodes * max_num_nodes + idx1 * max_num_nodes + idx2
-    adj = scatter(edge_attr, idx, dim=0, dim_size=flattened_size, reduce='sum')
+    # adj = scatter(edge_attr, idx, dim=0, dim_size=flattened_size, reduce='sum')
+    print(edge_attr.shape[0])
+    print(idx.shape[0])
+    adj = unsorted_segment_sum(edge_attr, idx)
     adj = adj.reshape(size)
 
     return adj

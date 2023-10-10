@@ -1,6 +1,7 @@
 import argparse
 import os.path as osp
 import os
+os.environ['TL_BACKEND'] = 'torch'
 import random
 from time import perf_counter as t
 import yaml
@@ -151,6 +152,7 @@ class train_loss(WithLoss):
 def test(final=False):
     model.set_eval()
     z = model(data.x, data.edge_index)
+    print(z,tlx.get_tensor_shape(z))
     if args.dataset == 'ogbn-arxiv':
         y_pred = z.argmax(dim=-1, keepdim=True)
 
@@ -180,7 +182,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='Cora')
     parser.add_argument('--gpu_id', type=int, default=5)
-    parser.add_argument('--config', type=str, default='config.yaml')
+    parser.add_argument('--config', type=str, default='/home/lyq/gf/GRACE/config.yaml')
     parser.add_argument('--use_pot', default=False, action="store_true") # whether to use pot in loss
     parser.add_argument('--kappa', type=float, default=0.5)
     parser.add_argument('--pot_batch', type=int, default=-1)
@@ -193,9 +195,9 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    assert args.gpu_id in range(0, 9)
-    tlx.set_device('GPU',args.gpu_id)
-
+    # assert args.gpu_id in range(0, 9)
+    # tlx.set_device(device='GPU',id=args.gpu_id)
+    tlx.set_device('CPU')
     config = yaml.load(open(args.config), Loader=SafeLoader)[args.dataset]
     # for hyperparameter tuning
     if args.drop_1 != -1:
@@ -272,9 +274,9 @@ if __name__ == '__main__':
         now = t()
         print(f'(T) | Epoch={epoch:03d}, loss={loss:.4f}, '
               f'this epoch {now - prev:.4f}, total {now - start:.4f}')
-        if epoch % 100 == 0:
-            res = test()
-            print(res)
+        res = test()
+        print(res)
+        # if epoch % 100 == 0:
         prev = now
 
     print("=== Final ===")

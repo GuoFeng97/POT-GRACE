@@ -1,8 +1,8 @@
 from typing import Optional
 import tensorflow as tf
-from torch.nn import BCEWithLogitsLoss
 import torch
 import tensorlayerx as tlx
+from tensorlayerx.losses import sigmoid_cross_entropy
 from tensorlayerx import nn
 from torch.sparse import mm
 from gammagl.layers.conv import GCNConv
@@ -66,20 +66,19 @@ class Model(tlx.nn.Module):
 
         self.fc1 = tlx.nn.Linear(in_features=num_hidden, out_features=num_proj_hidden)
         self.fc2 = tlx.nn.Linear(in_features=num_proj_hidden, out_features=num_hidden)
-        self.pot_loss_func = BCEWithLogitsLoss()
+        self.pot_loss_func = torch.nn.BCEWithLogitsLoss()
     def forward(self, x, edge_index):
         return self.encoder(x, edge_index)
 
     def projection(self, z: tlx.convert_to_tensor)->tlx.convert_to_tensor:
-        z = tlx.nn.activation.ELU()(self.fc1(z))
+        z = tlx.nn.activation.ELU()(self.fc1(z))#可能有错
         return self.fc2(z)
 
     def sim(self, z1, z2):
         # normalize embeddings across feature dimension
-
         z1 = tlx.l2_normalize(z1, axis=1)
         z2 = tlx.l2_normalize(z2, axis=1)
-
+        # print(tlx.get_tensor_shape(z1),tlx.get_tensor_shape(z2),tlx.get_tensor_shape(tlx.transpose(z2)))
         return tlx.matmul(z1, tlx.transpose(z2))#!!!!!!!!!!!!
     
     def semi_loss(self, z1, z2):
@@ -91,7 +90,7 @@ class Model(tlx.nn.Module):
         #     between_sim.diag()
         #     / (refl_sim.sum(1) + between_sim.sum(1) - refl_sim.diag()))
         x1 = tlx.reduce_sum(refl_sim, axis=1) + tlx.reduce_sum(between_sim, axis=1) - tlx.diag(refl_sim, 0)
-        loss = -tlx.log(tlx.diag(between_sim, 0) / x1)
+        loss = -tlx.log(tlx.diag(between_sim) / x1)
 
         return loss
 
@@ -155,7 +154,7 @@ class Model(tlx.nn.Module):
             #new_edge_index, An = calc_gcn_norm(edge_index, num_nodes=A.shape[0])
             new_edge_index ,_ =add_self_loops(edge_index, num_nodes=A.shape[0])
             An = calc_gcn_norm(edge_index, num_nodes=A.shape[0])
-            # An = to_dense_adj(new_edge_index, edge_attr = An)[0].cpu().numpy()#需要手搓！！！！太难了！！！
+            An = to_dense_adj(new_edge_index, edge_attr = An)[0].cpu().numpy()#需要手搓！！！！太难了！！！
             A_lower = np.zeros_like(An)
             A_lower[np.diag_indices_from(A_lower)] = np.diag(An)
             A_lower = np.float32(A_lower)
@@ -201,7 +200,7 @@ class Model(tlx.nn.Module):
         pot_score = mm(An_ptb, H_tilde) + b_tilde_2.view(-1,1)
         pot_score = pot_score.squeeze()
         target = tlx.zeros(pot_score.shape, device=device) + 1
-        pot_loss = self.pot_loss_func(pot_score, target)
+        pot_loss = sigmoid_cross_entropy(pot_score, target)
         return pot_loss
 # class LogReg(nn.Module):
 #     def __init__(self, ft_in, nb_classes):

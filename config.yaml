@@ -1,8 +1,8 @@
 Cora:
   seed: 39788
   learning_rate: 0.0005
-  num_hidden: 512
-  num_proj_hidden: 512
+  num_hidden: 128
+  num_proj_hidden: 128
   activation: 'relu'
   base_model: 'GCNConv'
   num_layers: 2
