@@ -18,67 +18,10 @@ from my_utils_ggl import seed_everything,dropout_adj,get_dataset,generate_split,
 from model_ggl import Encoder, Model, drop_feature
 from eval_ggl import log_regression, MulticlassEvaluator
 
-
-# def train_loss(model: Model, x, edge_index, epoch):
-#     # model.set_train()
-#     # optimizer.zero_grad()
-#     #optimizer.apply_gradients(0)#?????不知道这么写对不对
-#     edge_index_1 = dropout_adj(edge_index, p=drop_edge_rate_1)[0]
-#     edge_index_2 = dropout_adj(edge_index, p=drop_edge_rate_2)[0]
-#     # x_1 = drop_feature(x, drop_feature_rate_1)
-#     # x_2 = drop_feature(x, drop_feature_rate_2)
-#     x_1, x_2 = x, x
-#     z1 = model(x_1, edge_index_1)
-#     z2 = model(x_2, edge_index_2)
-#     node_list = np.arange(z1.shape[0])
-#     np.random.shuffle(node_list)
-#     if args.dataset in ["PubMed", "Computers", "WikiCS"]:
-#         batch_size = 4096
-#     else:
-#         batch_size = None
-
-#     if batch_size is not None:
-#         node_list_batch = get_batch(node_list, batch_size, epoch)
-
-#     # nce loss
-#     if batch_size is not None:
-#         z11 = z1[node_list_batch]
-#         z22 = z2[node_list_batch]
-#         nce_loss = model.loss(z11, z22)
-#     else:
-#         nce_loss = model.loss(z1, z2)
-#     # pot loss
-#     if use_pot:
-#         # get node_list_tmp, the nodes to calculate pot_loss
-#         if pot_batch != -1:
-#             if batch_size is None:
-#                 node_list_tmp = get_batch(node_list, pot_batch, epoch)
-#             else:
-#                 node_list_tmp = get_batch(node_list_batch, pot_batch, epoch)
-#         else:
-#             # full pot batch
-#             if batch_size == None:
-#                 node_list_tmp = node_list
-#             else:
-#                 node_list_tmp = node_list_batch
-#         z11 = z1[node_list_tmp]
-#         z22 = z2[node_list_tmp]
-#         global A_upper_1, A_upper_2, A_lower_1, A_lower_2
-#         if A_upper_1 is None or A_upper_2 is None:
-#             A_upper_1, A_lower_1 = get_A_bounds(args.dataset, drop_edge_rate_1)
-#             A_upper_2, A_lower_2 = get_A_bounds(args.dataset, drop_edge_rate_2)
-#         pot_loss_1 = model.pot_loss(z11, z22, data.x, data.edge_index, edge_index_1, local_changes=drop_edge_rate_1, 
-#                                   node_list=node_list_tmp, A_upper=A_upper_1, A_lower=A_lower_1)
-#         pot_loss_2 = model.pot_loss(z22, z11, data.x, data.edge_index, edge_index_2, local_changes=drop_edge_rate_2, 
-#                                   node_list=node_list_tmp, A_upper=A_upper_2, A_lower=A_lower_2)
-#         pot_loss = (pot_loss_1 + pot_loss_2) / 2
-#         loss = (1 - kappa) * nce_loss + kappa * pot_loss
-#     else:
-#         loss = nce_loss
-#     loss.backward()
-#     optimizer.step()
-
-#     return loss.item()
+A_upper_1 = None
+A_upper_2 = None
+A_lower_1 = None
+A_lower_2 = None
 
 class train_loss(WithLoss):
     def __init__(self, model, drop_edge_rate_1, drop_edge_rate_2, use_pot=False, pot_batch=-1, kappa=0.5):
@@ -114,7 +57,6 @@ class train_loss(WithLoss):
         # pot loss
         if self.use_pot:
             # get node_list_tmp, the nodes to calculate pot_loss
-            print(self.pot_batch)
             if self.pot_batch != -1:
                 if batch_size is None:
                     node_list_tmp = get_batch(node_list, self.pot_batch, epoch)
@@ -152,7 +94,6 @@ class train_loss(WithLoss):
 def test(final=False):
     model.set_eval()
     z = model(data.x, data.edge_index)
-    print(z,tlx.get_tensor_shape(z))
     if args.dataset == 'ogbn-arxiv':
         y_pred = z.argmax(dim=-1, keepdim=True)
 
@@ -235,10 +176,6 @@ if __name__ == '__main__':
     path = osp.join(osp.expanduser('~'), 'datasets')
     dataset = get_dataset(path, args.dataset)
     data = dataset[0]
-
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # print(device)
-    # data = data.to(device)
     
     # generate split
     if args.dataset in ["Cora", "CiteSeer", "PubMed"]:
@@ -260,7 +197,8 @@ if __name__ == '__main__':
     if use_pot:
         fp = osp.join(osp.expanduser('~/datasets'),f"bounds/{args.dataset}_{drop_edge_rate_1}_upper_lower.pkl")
         if os.path.exists(fp):
-            pickle.load(fp)
+            with open(fp, 'rb') as file: 
+                A_upper_1_, A_lower_1_=pickle.load(file)
             # A_upper_1_, A_lower_1_ = tlx.model.load_weights(fp)
         else:
             A_upper_1, A_lower_1 = get_A_bounds(args.dataset, drop_edge_rate_1)
@@ -274,9 +212,9 @@ if __name__ == '__main__':
         now = t()
         print(f'(T) | Epoch={epoch:03d}, loss={loss:.4f}, '
               f'this epoch {now - prev:.4f}, total {now - start:.4f}')
-        res = test()
-        print(res)
-        # if epoch % 100 == 0:
+        if epoch % 100 == 0:
+            res = test()
+            print(res)
         prev = now
 
     print("=== Final ===")

@@ -41,36 +41,6 @@ def get_dataset(path, name):
 
     return (Planetoid)(osp.join(root_path, 'Citation'), name, transform=T.NormalizeFeatures()) # public split
 
-from typing import List, Union
-
-# from gammagl import Data,HeteroData
-# from torch_geometric.data.datapipes import functional_transform
-# from gammagl.transforms import BaseTransform
-
-# # @functional_transform('normalize_features_sparse')
-# class NormalizeFeaturesSparse(BaseTransform):
-#     r"""Row-normalizes the attributes given in :obj:`attrs` to sum-up to one
-#     (functional name: :obj:`normalize_features`).
-
-#     Args:
-#         attrs (List[str]): The names of attributes to normalize.
-#             (default: :obj:`["x"]`)
-#     """
-#     def __init__(self, attrs: List[str] = ["x"]):
-#         self.attrs = attrs
-
-#     def __call__(
-#         self,
-#         data: Union[Data, HeteroData],
-#     ) -> Union[Data, HeteroData]:
-#         for store in data.stores:
-#             for key, value in store.items(*self.attrs):
-#                 value = value.to_dense()
-#                 value = value - value.min()
-#                 value.div_(value.sum(dim=-1, keepdim=True).clamp_(min=1.))
-#                 store[key] = value
-#         return data
-
 def generate_split(num_samples: int, train_ratio: float, val_ratio: float):
     train_len = int(num_samples * train_ratio)
     val_len = int(num_samples * val_ratio)
@@ -103,11 +73,11 @@ def seed_everything(seed: int):
     torch.backends.cudnn.benchmark = False
 
 def get_alpha_beta(l, u, alpha):
-    alpha_L= tlx.zeros(l.shape,device=l.device)
+    alpha_L= tlx.zeros(l.shape)
     # alpha_U, beta_L, beta_U = torch.clone(alpha_L), torch.clone(alpha_L), torch.clone(alpha_L)
-    alpha_U= tlx.zeros(l.shape,device=l.device)
-    beta_L= tlx.zeros(l.shape,device=l.device)
-    beta_U= tlx.zeros(l.shape,device=l.device)
+    alpha_U= tlx.zeros(l.shape)
+    beta_L= tlx.zeros(l.shape)
+    beta_U= tlx.zeros(l.shape)
     pos_mask = l >= 0
     neg_mask = u <= 0
     alpha_L[pos_mask] = 1
@@ -129,13 +99,15 @@ def get_crown_weights(l1, u1, l2, u2, alpha, gcn_weights, Wcl):
     Delta_2 = tlx.where(Wcl >= 0, beta_2_L, beta_2_U) # N * d
     Lambda_2 = lambda_2 * Wcl # N * d
     W1_tensor, b1_tensor, W2_tensor, b2_tensor = gcn_weights
-    W_tilde_2 = Lambda_2 @ W2_tensor.T
-    b_tilde_2 = tlx.diag(Lambda_2 @ (Delta_2 + b2_tensor).T)
+    # print(W2_tensor,tlx.get_tensor_shape(W2_tensor))#???????????和原版不太一样的结果
+    #W_tilde_2 = Lambda_2 @ W2_tensor.T
+    W_tilde_2 = Lambda_2 @ W2_tensor#去掉了转置才行？？？
+    b_tilde_2 = tlx.diag(Lambda_2 @ tlx.transpose(Delta_2 + b2_tensor))
     lambda_1 = tlx.where(W_tilde_2 >= 0, alpha_1_L, alpha_1_U)
     Delta_1 = tlx.where(W_tilde_2 >= 0, beta_1_L, beta_1_U)
     Lambda_1 = lambda_1 * W_tilde_2
-    W_tilde_1 = Lambda_1 @ W1_tensor.T
-    b_tilde_1 = tlx.diag(Lambda_1 @ (Delta_1 + b1_tensor).T)
+    W_tilde_1 = Lambda_1 @ W1_tensor
+    b_tilde_1 = tlx.diag(Lambda_1 @ tlx.transpose(Delta_1 + b1_tensor))
     return W_tilde_1, b_tilde_1, W_tilde_2, b_tilde_2
 def get_batch(node_list, batch_size, epoch):
     num_nodes = len(node_list)
@@ -149,8 +121,8 @@ def get_batch(node_list, batch_size, epoch):
 def get_A_bounds(dataset, drop_rate):
     upper_lower_file = osp.join(osp.expanduser('~/datasets'),f"bounds/{dataset}_{drop_rate}_upper_lower.pkl")
     if osp.exists(upper_lower_file):
-        pickle.load(upper_lower_file)
-        # A_upper, A_lower = tlx.model.load_weights(upper_lower_file)
+        with open(upper_lower_file, 'rb') as file:       
+            A_upper, A_lower=pickle.load(file)
     else:
         A_upper, A_lower = None, None
     return A_upper, A_lower
@@ -220,33 +192,28 @@ def dropout_adj(
 
 
 def to_dense_adj(
-    edge_index,
+    edge_index:tlx.convert_to_tensor,
     batch:tlx.convert_to_tensor = None,
     edge_attr:tlx.convert_to_tensor = None,
     max_num_nodes: Optional[int] = None,
-    batch_size: Optional[int] = None,
 ):
 
     if batch is None:
         num_nodes = int(tlx.reduce_max(edge_index)) + 1 if tlx.numel(edge_index) > 0 else 0
-        # batch = edge_index.new_zeros(num_nodes)
-        batch = tlx.zeros((num_nodes,),dtype=tlx.int64)
+        batch = tlx.zeros([num_nodes], dtype=tlx.int64)
 
-    if batch_size is None:
-        batch_size = int(tlx.reduce_max(batch)) + 1 if tlx.numel(batch) > 0 else 1
+    batch_size = int(tlx.reduce_max(batch)) + 1 if tlx.numel(batch) > 0 else 1
+    one = tlx.ones(shape=(batch.size(0),), dtype=tlx.int64)
+    num_nodes = unsorted_segment_sum(one, batch, batch_size)
+    cum_nodes = tlx.concat([tlx.zeros([1],dtype=tlx.int64), tlx.cumsum(num_nodes)])
 
-    one = tlx.ones((batch.shape[0],),dtype=tlx.int64)
-    # num_nodes = scatter(one, batch, dim=0, dim_size=batch_size, reduce='sum')
-    num_nodes = unsorted_segment_sum(one, batch)
-    cum_nodes = tlx.cumsum(num_nodes)
-    
     idx0 = batch[edge_index[0]]
     idx1 = edge_index[0] - cum_nodes[batch][edge_index[0]]
     idx2 = edge_index[1] - cum_nodes[batch][edge_index[1]]
 
     if max_num_nodes is None:
-        max_num_nodes = int(tlx.reduce_max(num_nodes))
-
+        max_num_nodes = num_nodes.max().item()
+        # max_num_nodes = int(tlx.reduce_max(num_nodes))
     elif ((tlx.numel(idx1) > 0 and tlx.reduce_max(idx1) >= max_num_nodes)
           or (tlx.numel(idx2) > 0 and tlx.reduce_max(idx2) >= max_num_nodes)):
         mask = (idx1 < max_num_nodes) & (idx2 < max_num_nodes)
@@ -256,17 +223,26 @@ def to_dense_adj(
         edge_attr = None if edge_attr is None else edge_attr[mask]
 
     if edge_attr is None:
-        edge_attr = tlx.ones(tlx.numel(idx0))
+        edge_attr = tlx.ones(tlx.numel(idx0), dtype=tlx.int64)
 
     size = [batch_size, max_num_nodes, max_num_nodes]
     size += list(edge_attr.size())[1:]
-    flattened_size = batch_size * max_num_nodes * max_num_nodes
+    adj = tlx.zeros(size, dtype=tlx.int64)
 
+    flattened_size = batch_size * max_num_nodes * max_num_nodes
+    adj = adj.reshape([flattened_size] + list(adj.size())[3:])
     idx = idx0 * max_num_nodes * max_num_nodes + idx1 * max_num_nodes + idx2
-    # adj = scatter(edge_attr, idx, dim=0, dim_size=flattened_size, reduce='sum')
-    print(edge_attr.shape[0])
-    print(idx.shape[0])
     adj = unsorted_segment_sum(edge_attr, idx)
     adj = adj.reshape(size)
 
     return adj
+
+    
+
+    
+
+    
+
+    
+
+    

@@ -53,8 +53,8 @@ def log_regression(z,
                    preload_split=None):
     # test_device = z.device if test_device is None else test_device
     # z = z.detach().to(test_device)
-    
-    num_hidden = tlx.get_tensor_shape(z.detach())[1]
+    z=z.detach()
+    num_hidden = tlx.get_tensor_shape(z)[1]
     y = dataset[0].y
     y = tlx.reshape(y, [-1])
     num_classes = tlx.convert_to_numpy(tlx.reduce_max(y) + 1)
@@ -62,17 +62,10 @@ def log_regression(z,
     split = get_idx_split(dataset, split, preload_split)
     split = {k: v for k, v in split.items()}
 
-    print(num_hidden,num_classes)
     classifier = LogReg(num_hidden, num_classes)
     optimizer = Adam(lr=0.01, weight_decay=0.0)
     train_weights = classifier.trainable_weights
-    output = classifier(z[split['train']])
-    output = nn.LogSoftmax(dim=-1)(output)
     nll_loss=nll_loss_func
-    # train_one_step = TrainOneStep(nll_loss, optimizer, train_weights)
-
-    # loss_fn = tlx.losses.softmax_cross_entropy_with_logits
-
     net_with_loss = tlx.model.WithLoss(classifier, nll_loss)
     train_one_step = tlx.model.TrainOneStep(net_with_loss, optimizer, train_weights)
 
@@ -83,8 +76,7 @@ def log_regression(z,
 
     for epoch in range(num_epochs):
         classifier.set_train()
-        
-        loss = train_one_step(output, y[split['train']])
+        loss = train_one_step(z[split['train']], y[split['train']])
 
         if (epoch + 1) % 20 == 0:
             if 'val' in split:

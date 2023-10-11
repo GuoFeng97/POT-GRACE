@@ -2,7 +2,7 @@ from typing import Optional
 import tensorflow as tf
 import torch
 import tensorlayerx as tlx
-from tensorlayerx.losses import sigmoid_cross_entropy
+from tensorlayerx.losses import binary_cross_entropy
 from tensorlayerx import nn
 from torch.sparse import mm
 from gammagl.layers.conv import GCNConv
@@ -10,29 +10,28 @@ from gammagl.layers.conv import GCNConv
 from gammagl.utils import add_self_loops, calc_gcn_norm, degree, to_undirected, to_scipy_sparse_matrix
 import numpy as np
 import scipy.sparse as sp
-
+import pickle
+from scipy.sparse import coo_matrix
 import os.path as osp
 from time import perf_counter as t
 from my_utils_ggl import get_alpha_beta, get_crown_weights, to_dense_adj
 
+def BCEWithLogitsLoss(output, target):
+    return torch.nn.BCEWithLogitsLoss()(output, target)
+
 class LogReg(nn.Module):
     def __init__(self, ft_in, nb_classes):
         super(LogReg, self).__init__()
-        self.fc = nn.Linear(in_features=ft_in, out_features=nb_classes, W_init=tlx.initializers.xavier_uniform(nb_classes))
-
-        # for m in self.modules():
-        #     self.weights_init(m)
-
-    # def weights_init(self, m):
-    #     if isinstance(m, nn.Linear):
-    #         tlx.initializers.XavierUniform(m.weight.data)
-    #         if m.bias is not None:
-    #             m.bias.data.fill_(0.0)??????
+        self.fc = nn.Linear(
+            in_features=ft_in, 
+            out_features=nb_classes, 
+            W_init=tlx.initializers.xavier_uniform(nb_classes)
+        )
 
     def forward(self, seq):
         ret = self.fc(seq)
+        ret = nn.LogSoftmax(dim=-1)(ret) 
         return ret
-
 
 class Encoder(tlx.nn.Module):
     def __init__(self, in_channels: int, out_channels: int, activation,
@@ -52,7 +51,7 @@ class Encoder(tlx.nn.Module):
 
     def forward(self, x:tlx.convert_to_tensor, edge_index:tlx.convert_to_tensor):
         for i in range(self.k):
-            x = self.activation()(self.conv[i](x, edge_index))#??????????这个形式正确吗
+            x = self.activation()(self.conv[i](x, edge_index))#??????????可能写错了但是又改不了！！！！
         return x
 
 
@@ -78,17 +77,13 @@ class Model(tlx.nn.Module):
         # normalize embeddings across feature dimension
         z1 = tlx.l2_normalize(z1, axis=1)
         z2 = tlx.l2_normalize(z2, axis=1)
-        # print(tlx.get_tensor_shape(z1),tlx.get_tensor_shape(z2),tlx.get_tensor_shape(tlx.transpose(z2)))
-        return tlx.matmul(z1, tlx.transpose(z2))#!!!!!!!!!!!!
+        return tlx.matmul(z1, tlx.transpose(z2))
     
     def semi_loss(self, z1, z2):
         f = lambda x: tlx.exp(x / self.tau)
         refl_sim = f(self.sim(z1, z1))
         between_sim = f(self.sim(z1, z2))
 
-        # return -tlx.log(
-        #     between_sim.diag()
-        #     / (refl_sim.sum(1) + between_sim.sum(1) - refl_sim.diag()))
         x1 = tlx.reduce_sum(refl_sim, axis=1) + tlx.reduce_sum(between_sim, axis=1) - tlx.diag(refl_sim, 0)
         loss = -tlx.log(tlx.diag(between_sim) / x1)
 
@@ -133,13 +128,13 @@ class Model(tlx.nn.Module):
         return ret
     def pot_loss(self, z1, z2, x, edge_index, edge_index_1, local_changes=5, node_list = None, A_upper=None, A_lower=None):
         deg = degree(to_undirected(edge_index)[1]).cpu().numpy()
-        device = z1.device
         A = to_scipy_sparse_matrix(edge_index).tocsr()
         A_tilde = A + sp.eye(A.shape[0])
         assert self.encoder.k == 2 # only support 2-layer GCN
         conv = self.encoder.conv
-        W1, b1 = conv[0].all_weights, conv[0].bias#不知道怎么改权重
-        W2, b2 = conv[1].all_weights, conv[1].bias
+        # W1, b1 = conv[0].all_weights, conv[0].bias#不知道怎么改权重
+        W1, b1 = tlx.transpose(conv[0].linear.weights), conv[0].bias
+        W2, b2 = tlx.transpose(conv[1].linear.weights), conv[1].bias
         gcn_weights = [W1, b1, W2, b2]
         # load entry-wise bounds, if not exist, calculate
         if A_upper is None:
@@ -150,30 +145,34 @@ class Model(tlx.nn.Module):
             A_upper = sqrt_degs_tilde_max_delete * sqrt_degs_tilde_max_delete[:, None]
             A_upper = np.where(A_tilde.toarray() > 0, A_upper, np.zeros_like(A_upper))
             A_upper = np.float32(A_upper)
-
             #new_edge_index, An = calc_gcn_norm(edge_index, num_nodes=A.shape[0])
             new_edge_index ,_ =add_self_loops(edge_index, num_nodes=A.shape[0])
-            An = calc_gcn_norm(edge_index, num_nodes=A.shape[0])
-            An = to_dense_adj(new_edge_index, edge_attr = An)[0].cpu().numpy()#需要手搓！！！！太难了！！！
+            An = calc_gcn_norm(new_edge_index, num_nodes=A.shape[0])
+            An = to_dense_adj(edge_index=new_edge_index, edge_attr=An)[0].cpu().numpy()#需要手搓！！！！太难了！！！
             A_lower = np.zeros_like(An)
             A_lower[np.diag_indices_from(A_lower)] = np.diag(An)
             A_lower = np.float32(A_lower)
-            upper_lower_file = osp.join(osp.expanduser('~/datasets'),f"bounds/{self.dataset}_{local_changes}_upper_lower.pkl")
+            # upper_lower_file = osp.join(osp.expanduser('~/datasets'),f"bounds/{self.dataset}_{local_changes}_upper_lower.pkl")
+            # upper_lower_file = open(f'datasets/bounds/{self.dataset}_{local_changes}_upper_lower.pkl', 'wb'))
+            upper_lower_file = osp.join(osp.expanduser('~/datasets'), f"bounds/{self.dataset}_{local_changes}_upper_lower.pkl")
+
             if self.dataset == 'ogbn-arxiv':
-                tlx.save((tlx.convert_to_tensor(A_upper).to_sparse(), tlx.convert_to_tensor(A_lower).to_sparse()), upper_lower_file)
+                with open(upper_lower_file, 'wb') as file:
+                    pickle.dump((tlx.convert_to_tensor(A_upper).to_sparse(), tlx.convert_to_tensor(A_lower).to_sparse()), file)
             else:
-                tlx.save((A_upper, A_lower), upper_lower_file)
+                with open(upper_lower_file, 'wb') as file:
+                    pickle.dump((A_upper, A_lower), file)
         N = len(node_list)
         if self.dataset == 'ogbn-arxiv':
-            A_upper_tensor = tlx.convert_to_tensor(A_upper.to_dense()[node_list][:,node_list], device=device).to_sparse()
-            A_lower_tensor = tlx.convert_to_tensor(A_lower.to_dense()[node_list][:,node_list], device=device).to_sparse()
+            A_upper_tensor = tlx.convert_to_tensor(A_upper.to_dense()[node_list][:,node_list]).to_sparse()
+            A_lower_tensor = tlx.convert_to_tensor(A_lower.to_dense()[node_list][:,node_list]).to_sparse()
         else:
-            A_upper_tensor = tlx.convert_to_tensor(A_upper[node_list][:,node_list], device=device).to_sparse()
-            A_lower_tensor = tlx.convert_to_tensor(A_lower[node_list][:,node_list], device=device).to_sparse()
+            A_upper_tensor = tlx.convert_to_tensor(A_upper[node_list][:,node_list]).to_sparse()
+            A_lower_tensor = tlx.convert_to_tensor(A_lower[node_list][:,node_list]).to_sparse()
         # get pre-activation bounds for each node
-        XW = conv[0].lin(x)[node_list]
-        H = self.encoder.activation(conv[0](x, edge_index))
-        HW = conv[1].lin(H)[node_list]
+        XW = conv[0].linear(x)[node_list]
+        H = self.encoder.activation()(conv[0](x, edge_index))
+        HW = conv[1].linear(H)[node_list]
         W_1 = XW
         b1 = conv[0].bias
         z1_U = mm((A_upper_tensor + A_lower_tensor) / 2, W_1) + mm((A_upper_tensor - A_lower_tensor) / 2, tlx.abs(W_1)) + b1
@@ -185,40 +184,25 @@ class Model(tlx.nn.Module):
         # CROWN weights
         activation = self.encoder.activation
         alpha = 0 if activation == tlx.nn.ReLU else activation.weight.item()
-        # Wcl = torch.stack([z2_norm[i] - (torch.cat([z2_norm[:i], z2_norm[i+1:]], dim=0)).mean(axis=0) for i in range(z2_norm.shape[0])])
         z2_norm = tlx.ops.l2_normalize(z2)
         z2_sum = z2_norm.sum(axis=0)
         Wcl = z2_norm * (N / (N-1)) - z2_sum / (N - 1)
         W_tilde_1, b_tilde_1, W_tilde_2, b_tilde_2 = get_crown_weights(z1_L, z1_U, z2_L, z2_U, alpha, gcn_weights, Wcl)
         # return the pot_score 
         XW_tilde = (x[node_list,None,:] @ W_tilde_1[:,:,None]).reshape(-1,1) # N * 1
-        # edge_index_ptb_sl, An_ptb = calc_gcn_norm(edge_index_1, num_nodes=A.shape[0])
-        edge_index_ptb_sl ,_ =add_self_loops(edge_index, num_nodes=A.shape[0])
-        An_ptb=calc_gcn_norm(edge_index_1, num_nodes=A.shape[0])
-        An_ptb = tlx.sparse_coo_tensor(edge_index_ptb_sl, An_ptb, size=(A.shape[0],A.shape[0])).index_select(0,tlx.convert_to_tensor(node_list).to(device)).index_select(1,tlx.convert_to_tensor(node_list).to(device))
-        H_tilde = mm(An_ptb, XW_tilde) + b_tilde_1.view(-1,1)
-        pot_score = mm(An_ptb, H_tilde) + b_tilde_2.view(-1,1)
-        pot_score = pot_score.squeeze()
-        target = tlx.zeros(pot_score.shape, device=device) + 1
-        pot_loss = sigmoid_cross_entropy(pot_score, target)
+        edge_index_ptb_sl ,_ =add_self_loops(edge_index_1, num_nodes=A.shape[0])
+        An_ptb=calc_gcn_norm(edge_index_ptb_sl, num_nodes=A.shape[0])
+        row, col = tlx.convert_to_numpy(edge_index_ptb_sl)
+        An_ptb = coo_matrix((An_ptb,(row, col)), shape=(A.shape[0],A.shape[0])).toarray()
+        An_ptb=tlx.gather(An_ptb,tlx.convert_to_tensor(node_list),0)
+        An_ptb=tlx.gather(An_ptb,tlx.convert_to_tensor(node_list),1)
+        An_ptb=tlx.convert_to_tensor(An_ptb)
+        H_tilde = mm(An_ptb, XW_tilde) + b_tilde_1.reshape(-1,1)
+        pot_score = mm(An_ptb, H_tilde) + b_tilde_2.reshape(-1,1)
+        pot_score = tlx.squeeze(pot_score,axis=1)
+        target = tlx.zeros(tlx.get_tensor_shape(pot_score)) + 1
+        pot_loss = BCEWithLogitsLoss(pot_score, target)
         return pot_loss
-# class LogReg(nn.Module):
-#     def __init__(self, ft_in, nb_classes):
-#         super(LogReg, self).__init__()
-#         self.fc = nn.Linear(in_features=ft_in, out_features=nb_classes)
-
-#         for m in self.modules():
-#             self.weights_init(m)
-
-#     def weights_init(self, m):
-#         if isinstance(m, nn.Linear):
-#             nn.initializers.XavierUniform(m.weight.data)
-#             if m.bias is not None:
-#                 m.bias.data.fill_(0.0)
-
-#     def forward(self, seq):
-#         ret = self.fc(seq)
-#         return ret
     
 def drop_feature(x, drop_prob):
     drop_mask = tlx.empty(
