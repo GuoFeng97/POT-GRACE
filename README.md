@@ -1,4 +1,4 @@
-# GammaGL Implementation of GRACE
+# GammaGL Implementation of GRACE-POT
 This GammaGL example implements the model proposed in the paper [xxxx](https://arxiv.org/).
 
 Author's code:
@@ -33,16 +33,17 @@ python GRACE_POT_trainer.py --dataset Cora --gpu_id 0
 # GRACE + POT
 python GRACE_POT_trainer.py --dataset Cora --gpu_id 0 --use_pot --kappa 0.4
 ```
-The result will be appended to the file "res/{dataset_name}_base_temp.csv" and "res/{dataset_name}_pot_temp.csv" respectively. You can also set the parameter "save_file" to specify the file to save results. We use minibatch to reduce the memory occupation, you can modify it in the code. To use minibatch for POT, set "pot_batch", usually 256/512/1024 will work:
-```
+The result will be appended to the file "res/{dataset_name}_base_temp.csv" and "res/{dataset_name}_pot_temp.csv" respectively. You can also set the parameter "save_file" to specify the file to save results. We use minibatch to reduce the memory occupation, you can modify it in the code. 
 
 ## 	Performance
+
+```
                     |   Author's Code   |  GAMMAGL's Code   |
 | Dataset | Metrics |  GRACE  |GRACE-POT|  GRACE  |GRACE-POT|
 |:-------:|:-------:|:-------:|:-------:|:-------:|:-------:|
-|  Cora   |  Mi-F1  |   73.6  |   83.5  |   73.6  |   83.5  |
-|  Cora   |  Ma-F1  |   73.6  |   83.5  |   73.6  |   83.5  |
-|  PubMed |  Mi-F1  |   73.6  |   83.5  |   73.6  |   83.5  |
-|  PubMed |  Ma-F1  |   73.6  |   83.5  |   73.6  |   83.5  |
-|  Photo  |  Mi-F1  |   73.6  |   83.5  |   73.6  |   83.5  |
-|  Photo  |  Ma-F1  |   73.6  |   83.5  |   73.6  |   83.5  |
+|  Cora   |  Mi-F1  |   78.2  |   79.2  |   78.2  |   82.2  |
+|  Cora   |  Ma-F1  |   76.8  |   77.8  |   77.1  |   81.3  |
+|  PubMed |  Mi-F1  |   81.6  |   82.0  |   81.6  |   82.0  |
+|  PubMed |  Ma-F1  |   81.7  |   82.4  |   80.5  |   80.1  |
+|  Photo  |  Mi-F1  |   91.2  |   91.8  |   89.8  |   90.0  |
+|  Photo  |  Ma-F1  |   89.2  |   90.0  |   88.5  |   87.9  |
